@@ -94,7 +94,8 @@ exports.allowBearer = (verifyFn) => {
 
   return memoizeMidWare((req, res, next) => {
     const auth = maybeIf(() => req.headers.authorization.split(' '));
-    if (auth) auth[1] = auth[1] && new Buffer(auth[1], 'base64').toString();
+    if (auth)
+      auth[1] = auth[1] && new Buffer(auth[1], 'base64').toString('utf-8');
     if (
       !Array.isArray(auth) || auth.length !== 2 ||
       auth[0].toLowerCase() !== 'bearer' || !verifyFn(auth[1])
@@ -157,8 +158,21 @@ exports.connectWithToken = (tokenFn, tokenInfoFn, newConnFn) => {
 
 exports.paramsParser = () => {
   return memoizeMidWare((req, res, next) => {
-    Promise.await(new Promise((y, n) => connect.bodyParser()(req, res, y)));
-    const params = req.body.params || [];
+    var params;
+
+    if ((req.method || '').toLowerCase() === 'get') {
+      params = maybeIf(
+        () => JSON.parse(
+          new Buffer(decodeURIComponent(req.query.params), 'base64')
+          .toString('utf-8')
+        )
+      );
+    }
+    else {
+      Promise.await(new Promise((y, n) => connect.bodyParser()(req, res, y)));
+      params = req.body.params || [];
+    }
+
     if (Array.isArray(params)) {
       next();
       return params;
@@ -176,6 +190,7 @@ exports.batchParamsParser = (paramsFn) => {
   return memoizeMidWare((req, res, next) => {
     const params = paramsFn(req, res);
     const t = Match.test(params, Match.Where(params => {
+      if (!Array.isArray(params)) return false;
       const len = params.length;
       if (!(len > 0 && len <= 50)) return false;
 
@@ -207,10 +222,27 @@ exports.subscribe = (connFn, paramsFn) => {
   return (req, res) => {
     const connection = connFn(req, res);
     const params = paramsFn(req, res);
-    const subName = decodeURI(req.url.slice(1));
+    const subName = decodeURI(req.url.slice(1).split('?')[0]);
 
-    connection._subscribeAndWait(subName, params);
+    const subHandle = maybeIf(
+      () => connection._subscribeAndWait(subName, params),
+      null, e => ({error: e})
+    );
+    if (!subHandle || subHandle.error) {
+      // Parses and throw the original 4xx and 5xx HTTP error codes.
+      const errCode =
+        maybeIf(
+          () => subHandle.error.message.match(
+            /(?:^|\D)([45]{1,1}\d\d)(?:\D|$)/
+          )[1]
+        ) || 403;
+      res.writeHead(errCode);
+      res.end('Subcription error');
+      return;
+    }
+
     const data = connection.fetch();
+    subHandle.stop();
 
     res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
@@ -228,13 +260,25 @@ exports.method = (connFn, paramsFn) => {
   return (req, res) => {
     const connection = connFn(req, res);
     const params = paramsFn(req, res);
-    const methodName = decodeURI(req.url.slice(1));
+    const methodName = decodeURI(req.url.slice(1).split('?')[0]);
 
-    const methodRes =
-      maybeIf(
-        () => connection.apply(methodName, params),
-        v => ({result: v}), e => ({error: e})
-      );
+    const methodRes = maybeIf(
+      () => connection.apply(methodName, params),
+      v => ({result: v}), e => ({error: e})
+    );
+    if (!methodRes || methodRes.error) {
+      // Parses and throw the original 4xx and 5xx HTTP error codes.
+      const errCode =
+        maybeIf(
+          () => methodRes.error.message.match(
+            /(?:^|\D)([45]{1,1}\d\d)(?:\D|$)/
+          )[1]
+        );
+      res.writeHead(errCode || 403);
+      res.end('Method error');
+      return;
+    }
+
     const data = connection.fetch();
 
     res.setHeader('Content-Type', 'application/json');
@@ -256,30 +300,69 @@ exports.batch = (connFn, paramsFn) => {
   return (req, res) => {
     const connection = connFn(req, res);
     const params = paramsFn(req, res);
+    var subQueue = [];
+    var subHandles = [];
 
-    const methodRes = params.reduce((acc, param) => {
+    const batchRes = params.reduce((acc, param) => {
       if (param.method) {
-        acc.push(
-          _.extend({name: param.method}, maybeIf(
-            () => connection.apply(param.method, param.params),
-            v => {result: v}, e => {error: e}
-          ))
+        let methodRes = maybeIf(
+          () => connection.apply(param.method, param.params),
+          v => ({result: v}), e => ({error: e})
         );
+        if (methodRes.error) {
+          // Return the original 4xx and 5xx HTTP error codes.
+          methodRes.error = maybeIf(
+            () => parseInt(methodRes.error.message.match(
+              /(?:^|\D)([45]{1,1}\d\d)(?:\D|$)/
+            )[1])
+          ) || 403;
+        }
+        acc.push(_.extend({method: param.method}, methodRes));
       }
       else if (param.subscribe) {
-        connection._subscribeAndWait(param.subscribe, param.params);
+        // We save all subscriptions to be performed after methods to ensure
+        // that the data returned is the most recent. Note: Outdated data may
+        // still be returned if the server returns from the method before
+        // updating the db.
+        acc.push(param);
+        subQueue.push(acc.length - 1);
       }
 
       return acc;
     }, []);
+
+    subQueue.forEach(i => {
+      const param = batchRes[i];
+
+      let subHandle = maybeIf(
+        () => connection._subscribeAndWait(param.subscribe, param.params),
+        null, e => ({error: e})
+      );
+      if (!subHandle || subHandle.error) {
+        // Return the original 4xx and 5xx HTTP error codes.
+        subHandle.error = maybeIf(
+          () => parseInt(subHandle.error.message.match(
+            /(?:^|\D)([45]{1,1}\d\d)(?:\D|$)/
+          )[1])
+        ) || 403;
+      }
+      // Store subHandles for unsubscription
+      subHandles.push(subHandle);
+
+      batchRes[i] = _.extend(
+        {subscribe: param.subscribe},
+        subHandle.error ? {error: subHandle.error} :
+          {result: subHandle.subscriptionId}
+      );
+    });
     const data = connection.fetch();
+    subHandles.forEach(s => {
+      if (s && typeof s.stop === 'function') s.stop();
+    });
 
     res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
-    res.end(JSON.stringify({
-      method: [_.extend({name: methodName}, methodRes)],
-      data
-    }));
+    res.end(JSON.stringify({batch: batchRes, data}));
   }
 };
 

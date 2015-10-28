@@ -2,13 +2,21 @@ serverUrl = 'http://localhost:' + process.env.PORT;
 
 Clients = new Mongo.Collection('ddp2rest_clients');
 Tokens = new Mongo.Collection('ddp2rest_tokens');
+Fruits = new Mongo.Collection('fruits');
 
 // Promisify HTTP
 for (let k in HTTP) {
-  HTTP[k + 'Async'] = HTTP[k].async();
+  HTTP[k + 'Async'] = (...args) => {
+    return new Promise((y, n) => {
+      HTTP[k](...args, (err, res) => {
+        if (err) n(err);
+        else y(res);
+      });
+    });
+  };
 }
 
-errorHandler = err => {
+errorHandler = test => err => {
   if (err instanceof Meteor.Error) test.fail(err);
   else if (err instanceof Error) test.fail(err.stack);
   else test.fail();
@@ -27,10 +35,19 @@ testConfig = {
 
       testFn(...args);
     }
-  }
-};
+  },
 
-Fruits = new Mongo.Collection('fruits');
+  data: (testFn) => {
+    return (...args) => {
+      Fruits.remove({});
+      ['apple', 'banana', 'cherry'].forEach(name => {
+        Fruits.insert({name, qty: 1});
+      });
+
+      testFn(...args);
+    }
+  },
+};
 
 Meteor.methods({
   'addFruit' (name, qty = 1) {
@@ -40,4 +57,7 @@ Meteor.methods({
   }
 });
 
-Meteor.publish('fruits', () => Fruits.find());
+Meteor.publish('fruits', (limit = 200) => {
+  check(limit, Match.Integer);
+  return Fruits.find({}, {limit});
+});

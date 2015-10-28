@@ -8,6 +8,7 @@ Server = class Server {
     self.authServer = opt.authServer || new AuthServer(opt);
     self.connectionManager =
       opt.connectionManager || new ConnectionManager(opt);
+    self.persistMethods = opt.persistMethods || ['login'];
   }
 
   routes () {
@@ -33,7 +34,6 @@ Server = class Server {
       .use(allowBearer)
       .use(paramsParser)
       .use(authConnect)
-      // .use((req, res, next) => (console.log('req'), next()))
       .use(middleware.method(authConnect, paramsParser))
     )
     .use(
@@ -43,15 +43,17 @@ Server = class Server {
       .use(middleware.allowUrl(/^\/.+$/))
       .use(allowBearer)
       .use(paramsParser)
+      .use(authConnect)
       .use(middleware.subscribe(authConnect, paramsParser))
     )
     .use(
       '/batch', connect()
       .use(middleware.allowSslOrLocal())
       .use(middleware.allowHttpMethod('post'))
-      .use(middleware.allowUrl(/^\/.+$/))
+      .use(middleware.allowUrl(/^\/$/))
       .use(allowBearer)
       .use(batchParamsParser)
+      .use(authConnect)
       .use(middleware.batch(authConnect, batchParamsParser))
     );
   }
