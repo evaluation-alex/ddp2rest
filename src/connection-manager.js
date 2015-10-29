@@ -6,7 +6,7 @@ ConnectionManager = class ConnectionManager {
     maxConnections = 5000
   } = {}) {
     const self = this;
-    _.extend(self, {connectTimeout, connectUrl, _connections: new Map});
+    _.extend(self, {connectTimeout, connectUrl, _connections: {}});
   }
 
   open (key, {expiresAt = this.connectionLifetime} = {}) {
@@ -31,12 +31,12 @@ ConnectionManager = class ConnectionManager {
         new ProxyConnection(self.connectUrl, {timeout: self.connectTimeout}),
       expiresAt
     }
-    self._connections.set(key, connInfo);
+    self._connections[key] = connInfo;
     return connInfo.connection;
   }
 
   close (key) {
-    return this._connections.delete(key);
+    delete this._connections[key];
   }
 
   clearExpired () {
