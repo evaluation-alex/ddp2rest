@@ -1,5 +1,3 @@
-const http = Npm.require('http');
-
 memoizeMidWare = (midWare) => (req, res, next = ()=>{}) => {
   const fn = () => {
     const cache = req._memoized = req._memoized || new Map;
