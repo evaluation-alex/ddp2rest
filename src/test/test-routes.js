@@ -1,13 +1,19 @@
 Tinytest.addAsync(
-  'ddp2rest - /token', testConfig.default((test, complete) => {
+  'ddp2rest - routes - /token', testConfig.default((test, complete) => {
     const url = serverUrl + '/api/token';
     const cred = Clients.findOne().env[0];
     const validOpt = {
       auth: cred.key + ':' + cred.secret,
-      params: {grant_type: 'client_credentials'}
+      params: {grant_type: 'client_credentials'},
     };
 
     Promise.all([
+      // Allow only SSL
+      HTTP.postAsync(url, _.extend({
+        headers: {'x-forwarded-for': '100.0.0.1'}
+      }, validOpt)).catch(x=>x)
+      .then(err => test.equal(err.response.statusCode, 426)),
+
       // No GET
       HTTP.getAsync(url).catch(x=>x)
       .then(err => test.equal(err.response.statusCode, 404)),
@@ -33,13 +39,13 @@ Tinytest.addAsync(
         });
       })
     ])
-    .catch(errorHandler)
+    .catch(errorHandler(test))
     .then(complete);
   })
 );
 
 Tinytest.addAsync(
-  'ddp2rest - /method', testConfig.default((test, complete) => {
+  'ddp2rest - routes - /method', testConfig.default((test, complete) => {
     const url = serverUrl + '/api/method';
     const cred = Clients.findOne().env[0];
 
@@ -54,6 +60,12 @@ Tinytest.addAsync(
       .toString('base64');
     })
     .then((Authorization) => Promise.all([
+      // Allow only SSL
+      HTTP.postAsync(url + '/addFruit', {
+        headers: {'x-forwarded-for': '100.0.0.1'},
+      }).catch(x=>x)
+      .then(err => test.equal(err.response.statusCode, 426)),
+
       // Missing method name
       HTTP.postAsync(url).catch(x=>x)
       .then(err => test.equal(err.response.statusCode, 404)),
@@ -68,6 +80,11 @@ Tinytest.addAsync(
 
       // Invalid method name
       HTTP.postAsync(url + '/asdf', {headers: {Authorization}}).catch(x=>x)
+      .then(err => test.equal(err.response.statusCode, 404)),
+      HTTP.postAsync(url + '/addFruits', {headers: {Authorization}}).catch(x=>x)
+      .then(err => test.equal(err.response.statusCode, 404)),
+      HTTP.postAsync(url + '/addFruit/asdf', {headers: {Authorization}})
+      .catch(x=>x)
       .then(err => test.equal(err.response.statusCode, 404)),
 
       // Invalid parameters
@@ -102,7 +119,75 @@ Tinytest.addAsync(
 );
 
 Tinytest.addAsync(
-  'ddp2rest - /subscribe',
+  'ddp2rest - routes - /method/login', _.compose(
+    testConfig.default,
+    testConfig.data,
+    testConfig.accounts
+  )((test, complete) => {
+    const url = serverUrl + '/api/method';
+    const cred = Clients.findOne().env[0];
+
+    HTTP.postAsync(serverUrl + '/api/token', {
+      auth: cred.key + ':' + cred.secret,
+      params: {grant_type: 'client_credentials'}
+    })
+    .then(res => {
+      test.equal(res.statusCode, 200);
+
+      return 'Bearer ' + new Buffer(res.data.access_token, 'utf-8')
+      .toString('base64');
+    })
+    .then((Authorization) => Promise.all([
+      // Non-login case
+      HTTP.postAsync(serverUrl + '/api/subscribe/secureFruits', {
+        headers: {Authorization},
+        data: {params: [1]}
+      }).catch(x=>x)
+      .then(err => test.equal(err.response.statusCode, 400)),
+
+      // Valid case
+      HTTP.postAsync(url + '/login', {
+        headers: {Authorization},
+        data: {params: [{user: {username: 'fruit'}, password: 'fruit'}]}
+      })
+      .then(res => {
+        test.equal(res.statusCode, 200);
+        const ejsonData = EJSON.parse(res.content);
+        check(ejsonData, Match.ObjectIncluding({
+          method: {
+            // The code depends on the fields below to detect a login response
+            name: 'login',
+            result: Match.ObjectIncluding({
+              token: String,
+              tokenExpires: Date
+            })
+          }
+        }));
+        return ejsonData.method.result.token;
+      })
+      .then(() => HTTP.postAsync(serverUrl + '/api/subscribe/secureFruits', {
+        headers: {Authorization},
+        data: {params: [1]}
+      }))
+      .then(res => {
+        test.equal(res.statusCode, 200);
+        check(res.data, Match.ObjectIncluding({
+          data: Match.ObjectIncluding({
+            fruits: Match.Where(x => {
+              check(x, [{_id: String, name: String, qty: Match.Integer}]);
+              return x.length === 1;
+            }),
+          })
+        }));
+      })
+    ]))
+    .catch(errorHandler(test))
+    .then(complete);
+  })
+);
+
+Tinytest.addAsync(
+  'ddp2rest - routes - /subscribe',
   testConfig.default(testConfig.data((test, complete) => {
     const url = serverUrl + '/api/subscribe';
     const cred = Clients.findOne().env[0];
@@ -117,6 +202,12 @@ Tinytest.addAsync(
       .toString('base64');
     })
     .then(Authorization => Promise.all([
+      // Allow only SSL
+      HTTP.postAsync(url + '/fruits', {
+        headers: {'x-forwarded-for': '100.0.0.1'},
+      }).catch(x=>x)
+      .then(err => test.equal(err.response.statusCode, 426)),
+
       // Missing subscription name
       HTTP.getAsync(url).catch(x=>x)
       .then(err => test.equal(err.response.statusCode, 404)),
@@ -189,7 +280,7 @@ Tinytest.addAsync(
 );
 
 Tinytest.addAsync(
-  'ddp2rest - /batch',
+  'ddp2rest - routes - /batch',
   testConfig.default(testConfig.data((test, complete) => {
     const url = serverUrl + '/api/batch';
     const cred = Clients.findOne().env[0];
