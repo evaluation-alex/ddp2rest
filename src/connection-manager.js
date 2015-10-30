@@ -3,14 +3,31 @@ ConnectionManager = class ConnectionManager {
     connectTimeout = 10,
     connectUrl = Meteor.absoluteUrl(),
     connectionLifetime = 3600,
-    maxConnections = 5000
+    maxConnections = 5000,
+    expireInterval = 11000
   } = {}) {
     const self = this;
-    _.extend(self, {connectTimeout, connectUrl, _connections: {}});
+    _.extend(self, {
+      connectTimeout,
+      connectUrl,
+      _connections: {},
+      _stopped: false,
+    });
+
+    const startExpire = () => {
+      if (self._stopped || !(expireInterval > 0)) return;
+
+      self._expireHandle = Meteor.setTimeout(function () {
+        self.clearExpired();
+        startExpire();
+      }, expireInterval);
+    };
+    startExpire();
   }
 
   open (key, {expiresAt = this.connectionLifetime} = {}) {
     const self = this;
+    if (self._stopped) return undefined;
     if (!key || !(expiresAt > new Date))
       throw new Error('Invalid key or expiry');
 
@@ -23,7 +40,7 @@ ConnectionManager = class ConnectionManager {
       return connInfo.connection;
     }
 
-    if (self.maxConnections + 1 > self._connections.size)
+    if (self.maxConnections + 1 > _.size(self._connections))
       throw new Error('Maximum number of connections reached');
 
     connInfo = {
@@ -32,18 +49,34 @@ ConnectionManager = class ConnectionManager {
       expiresAt
     }
     self._connections[key] = connInfo;
+
+    if (self._stopped) connInfo.connection.close();
+
     return connInfo.connection;
   }
 
   close (key) {
-    delete this._connections[key];
+    const self = this;
+    const connInfo = self._connections[key];
+    maybeIf(() => connInfo.connection.close());
+    delete self._connections[key];
+  }
+
+  stop () {
+    const self = this;
+    if (self._stopped) return;
+    self._stopped = true;
+    for (let k in self._connections) {
+      self.close(k);
+    }
   }
 
   clearExpired () {
     const self = this;
     const now = this;
-    self._connections.forEach((v, k) => {
-      if (!v.expiresAt > now) self._connections.delete(k);
-    });
+    for (let k in self._connections) {
+      const v = self._connections[k];
+      if (!v.expiresAt > now) self.close(k);
+    }
   }
 }

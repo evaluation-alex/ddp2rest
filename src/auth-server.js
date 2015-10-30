@@ -4,16 +4,26 @@ const Fiber = Npm.require('fibers');
 AuthServer = class AuthServer {
   constructor ({
     tokenLifetime = 3600,
+    keyLength = 42,
+    secretLength = 42,
     clients = new Mongo.Collection('ddp2rest_clients'),
     tokens = new Mongo.Collection('ddp2rest_tokens')
   } = {}) {
+    check(keyLength, Match.Where(x => {
+      check(x, Match.Integer);
+      return x >= 32;
+    }));
+    check(secretLength, Match.Where(x => {
+      check(x, Match.Integer);
+      return x >= 32;
+    }));
     const self = this;
 
     _.extend(self, {tokenLifetime, clients, tokens});
-    // self.strategies = {
-    //   'oauth2-client': () => self._strategyOauth2Client(),
-    //   'access-token': () => self._strategyAccessToken()
-    // }
+
+    self.denyRules = {
+      '/token': []
+    };
   }
 
   verifyClientCredentials (key, secret) {
@@ -40,7 +50,11 @@ AuthServer = class AuthServer {
     // Commit
     fields.created_at = new Date;
     fields.env = (fields.env || []).map(name => {
-      return {name, key: Random.id(32), secret: Random.secret(32)};
+      return {
+        name,
+        key: Random.id(self.keyLength),
+        secret: Random.secret(self.secretLength)
+      };
     });
 
     return self.clients.insert(fields);
@@ -145,6 +159,9 @@ AuthServer = class AuthServer {
       .use(middleware.allowHttpMethod('post'))
       .use(middleware.allowUrl(/^\/$/))
       .use(allowClient)
+      .use(middleware.deny(self.denyRules['/token'], {
+        token: allowClient
+      }))
       .use(middleware.grantToken(
         (...args) => maybeIf(() => allowClient(...args), x => x.key),
         key => ({

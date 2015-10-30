@@ -38,6 +38,8 @@ ProxyConnection = class ProxyConnection extends Connection {
     if (!opt.onConnected) connectFuture.wait();
 
     self.collections = self.collections || {};
+    self._onReconnectCallbacks = new Map;
+    delete self.onReconnect;
     self._onClose = [];
     self._stream.on(
       'message',
@@ -69,7 +71,6 @@ ProxyConnection = class ProxyConnection extends Connection {
   close (...args) {
     const self = this;
     super.close(...args);
-    console.log('self', self._onClose);
     while (self._onClose.length) { self._onClose.pop()(); }
   }
 
@@ -108,6 +109,43 @@ ProxyConnection = class ProxyConnection extends Connection {
       }, opt.timeout * 1000);
 
       statusFut.wait();
+    }
+  }
+
+  /**
+   * Add a callback.
+   *
+   * @param {Function} - callback
+   *//**
+   * Add or replace a callback.
+   *
+   * @param {*} key - Key referring to the callback.
+   * @param {Function} [callback] - Callback function to be added.
+   *//**
+   * Remove a callback.
+   *
+   * @param {*} key
+   *   Key referring to the callback. The key is the callback itself if not
+   *   specifed earlier.
+   * @param {null} callback - Set callback to null for removal.
+   *//**
+   * Run all callbacks that were added
+   */
+  onReconnect (...args) {
+    const self = this;
+    const argL = args.length;
+
+    if (argL === 0) {
+      self._onReconnectCallbacks.forEach((v, k) => v.call(self))
+    }
+    else if (argL === 1) {
+      if (typeof args[0] === 'function')
+      self._onReconnectCallbacks.set(args[0], args[0]);
+    }
+    else {
+      if (typeof args[1] === 'function')
+        self._onReconnectCallbacks.set(args[0], args[1]);
+      else if (args[1] === null) self._onReconnectCallbacks.delete(args[0]);
     }
   }
 

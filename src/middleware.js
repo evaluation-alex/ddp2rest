@@ -34,7 +34,11 @@ const isLocal = (req) => {
 exports.allowSslOrLocal = () => (req, res, next = () => {}) => {
   if (isLocal(req) || isSsl(req)) next();
   else {
-    res.writeHead(403);
+    // We want to set the upgrade header here, but connect does not push
+    // down upgrade responses down the route chain. We can look into this
+    // if we use something like node-restify instead of connect in future.
+    // Example: res.setHeader('Upgrade', 'TLS/1.0, HTTP/1.1');
+    res.writeHead(426);
     res.end('SSL is required');
   }
 }
@@ -115,7 +119,7 @@ exports.grantToken = (keyFn, createTokenFn) => {
   check(keyFn, Function);
   check(createTokenFn, Function);
 
-  return (req, res) => {
+  return memoizeMidWare((req, res) => {
     const key = keyFn(req, res);
     const token = createTokenFn(key);
     if (!token) {
@@ -125,9 +129,9 @@ exports.grantToken = (keyFn, createTokenFn) => {
     else {
       res.setHeader('Content-Type', 'application/json');
       res.writeHead(200);
-      res.end(JSON.stringify(token));
+      res.end(EJSON.stringify(token));
     }
-  };
+  });
 }
 
 exports.connectWithToken = (tokenFn, tokenInfoFn, newConnFn) => {
@@ -139,11 +143,7 @@ exports.connectWithToken = (tokenFn, tokenInfoFn, newConnFn) => {
     const token = tokenFn(req, res, ()=>{});
     const tokenInfo = tokenInfoFn(token);
     const connection =
-      maybeIf(
-        () => newConnFn(
-          tokenInfo.client_key, {expiresAt: tokenInfo.expires_at}
-        )
-      );
+      maybeIf(() => newConnFn(token, {expiresAt: tokenInfo.expires_at}));
     if (!connection) {
       res.writeHead(500);
       res.end('Unable to create connection');
@@ -162,7 +162,7 @@ exports.paramsParser = () => {
 
     if ((req.method || '').toLowerCase() === 'get') {
       params = maybeIf(
-        () => JSON.parse(
+        () => EJSON.parse(
           new Buffer(decodeURIComponent(req.query.params), 'base64')
           .toString('utf-8')
         )
@@ -246,16 +246,17 @@ exports.subscribe = (connFn, paramsFn) => {
 
     res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
-    res.end(JSON.stringify({data}));
+    res.end(EJSON.stringify({data}));
   }
 }
 
 /**
  * Method requests
  */
-exports.method = (connFn, paramsFn) => {
+exports.method = (connFn, paramsFn, methodOpt = {}) => {
   check(connFn, Function);
   check(paramsFn, Function);
+  check(methodOpt, Object);
 
   return (req, res) => {
     const connection = connFn(req, res);
@@ -281,9 +282,13 @@ exports.method = (connFn, paramsFn) => {
 
     const data = connection.fetch();
 
+    if (methodName === 'login' && typeof methodOpt.onLogin === 'function') {
+      methodOpt.onLogin(methodRes, connection, req);
+    }
+
     res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
-    res.end(JSON.stringify({
+    res.end(EJSON.stringify({
       method: _.extend({name: methodName}, methodRes),
       data
     }));
@@ -362,8 +367,17 @@ exports.batch = (connFn, paramsFn) => {
 
     res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
-    res.end(JSON.stringify({batch: batchRes, data}));
+    res.end(EJSON.stringify({batch: batchRes, data}));
   }
 };
+
+exports.deny = (rules, opt) => {
+  check(rules, Match.Optional([Function]));
+  check(opt, Object);
+
+  return (req, res, next) => {
+    next();
+  };
+}
 
 middleware = exports;

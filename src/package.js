@@ -24,11 +24,13 @@ Package.onUse(function(api) {
     'ddp-common',
     'mongo',
     'random',
+    'ejson',
     'check'
   ], 'server');
   api.addFiles([
     'util/maybeIf.js',
     'util/memoizeMidWare.js',
+    'util/deepExtendObj.js',
     'middleware.js',
     'proxy-connection.js',
     'connection-manager.js',
@@ -48,12 +50,15 @@ Package.onTest(function(api) {
     'ecmascript',
     'mongo',
     'http',
+    'ejson',
     'check',
-    'underscore'
+    'underscore',
+    'accounts-password'
   ], 'server');
   api.addFiles([
     'util/maybeIf.js',
     'test/bootstrap.js',
-    'test/tests.js'
+    'test/test-routes.js',
+    'test/test-server.js'
   ], 'server');
 });
